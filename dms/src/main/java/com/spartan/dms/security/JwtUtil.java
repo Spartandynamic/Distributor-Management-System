@@ -77,6 +77,19 @@ public class JwtUtil {
                 : java.time.LocalDateTime.ofInstant(issuedAt.toInstant(), java.time.ZoneId.systemDefault());
     }
 
+    /** Expiry of the token in epoch millis (used for per-token logout). */
+    public long extractExpirationMillis(String token) {
+
+        Claims claims = Jwts.parser()
+                .verifyWith(key)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+
+        Date exp = claims.getExpiration();
+        return exp == null ? System.currentTimeMillis() + 86400000L : exp.getTime();
+    }
+
     public boolean validateToken(String token) {
 
         try {

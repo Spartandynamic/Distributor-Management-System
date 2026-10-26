@@ -116,6 +116,7 @@ async function apiRequest(url, { method = "GET", body = null, auth = true } = {}
     try { data = await response.json(); } catch(e){ /* empty body */ }
 
     if (!response.ok){
+        if (response.status === 401 && headers["Authorization"] && typeof handleSessionExpired === "function") handleSessionExpired();
         const message = (data && (data.message || data.error)) || `Request failed (${response.status})`;
         const err = new Error(message);
         err.status = response.status;
@@ -144,6 +145,7 @@ async function apiRequestMultipart(url, formData, method = "POST"){
     let data = null;
     try { data = await response.json(); } catch(e){ /* empty body */ }
     if (!response.ok){
+        if (response.status === 401 && headers["Authorization"] && typeof handleSessionExpired === "function") handleSessionExpired();
         const message = (data && (data.message || data.error)) || `Request failed (${response.status})`;
         const err = new Error(message);
         err.status = response.status;
@@ -903,34 +905,6 @@ document.getElementById("repairProfilesBtn")?.addEventListener("click", () => {
 document.getElementById("approvalsSearch").addEventListener("input", renderApprovals);
 document.getElementById("approvalsStatusFilter").addEventListener("change", renderApprovals);
 
-// Danger Zone (Settings): permanently clears setup/test catalog +
-// transactional data. Gated behind the usual confirm modal AND a
-// type-to-confirm prompt (no undo exists on the backend for this one), so
-// it takes two deliberate steps to fire instead of one misclick.
-document.getElementById("resetTransactionalDataBtn")?.addEventListener("click", () => {
-    showConfirm("Reset product & transaction data",
-        "This permanently deletes ALL products, invoices, payments, product ledger entries, stock movements/transfers, purchase & sales returns, stock requests, per-partner pricing and warehouse stock. Admin, Super Stockist and Distributor accounts/profiles are NOT touched. This cannot be undone. Continue?",
-        () => {
-            const typed = window.prompt('This cannot be undone. Type RESET (all caps) to confirm:');
-            if (typed !== "RESET") {
-                showToast("Cancelled", "Data was not reset.", "info");
-                return;
-            }
-            (async () => {
-                showSpinner();
-                try{
-                    const res = await apiRequest(API_BASE + "/admin/reset-transactional-data", { method: "POST" });
-                    showToast("Data reset complete", (res && res.message) || "Data reset successfully.", "success");
-                    await loadAndRenderCrud("products");
-                }catch(err){
-                    showApiError(err, "Could not reset data");
-                }finally{
-                    hideSpinner();
-                }
-            })();
-        });
-});
-
 async function openApproveUserModal(userId, role){
     // The backend auto-creates the matching Distributor/Super Stockist
     // profile from the account's own details when no id is sent (see
@@ -1094,7 +1068,7 @@ async function loadAndRenderMyDistributors(){
             btn.addEventListener("click", () => openDistributorShopsModal(Number(btn.dataset.viewDistShops), btn.dataset.distName));
         });
     }catch(err){
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         showApiError(err, "Could not load your distributors");
     }finally{
         hideSpinner();
@@ -2292,7 +2266,7 @@ async function loadAndRenderAuditLog(){
         AUDIT_LOG_CACHE = unwrap(res, []);
         renderAuditLog();
     }catch(err){
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         document.getElementById("auditLogTableBody").innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Could not load audit log from the server.</td></tr>`;
         showApiError(err, "Could not load audit log");
     }finally{
@@ -2637,7 +2611,7 @@ async function loadAndRenderCrud(moduleName, page){
         const res = await apiRequest(cfg.endpoint);
         STATE[cfg.stateKey] = unwrap(res, []);
     }catch(err){
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         if (tbody) tbody.innerHTML = `<tr><td colspan="${cfg.emptyColspan}" class="text-center text-muted py-4">Could not load data from the server.</td></tr>`;
         showApiError(err, "Could not load " + moduleName);
         return;
@@ -3140,7 +3114,11 @@ let salesChartInstance, categoryChartInstance;
  * drops the user back to the login screen instead of silently showing
  * empty/zeroed widgets forever.
  */
+let _sessionExpiredShown = false;
 function handleSessionExpired(){
+    if (!getToken() && _sessionExpiredShown) return;   // already handled (parallel requests)
+    _sessionExpiredShown = true;
+    setTimeout(() => { _sessionExpiredShown = false; }, 3000);
     clearToken();
     appWrapper.classList.add("d-none");
     authWrapper.classList.remove("d-none");
@@ -3254,7 +3232,7 @@ async function renderSuperStockistDashboard(){
                 <td>${escapeHtml(formatDate(t.transferDate) || "—")}</td>
             </tr>`).join("") || `<tr><td colspan="3" class="text-center text-muted py-4">No incoming transfers yet.</td></tr>`;
     }catch(err){
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         showApiError(err, "Could not load your dashboard");
     }finally{
         hideSpinner();
@@ -3354,7 +3332,7 @@ async function renderAdminDashboard(){
     hideSpinner();
 
     const results = [dashRes, recentRes, lowStockRes, salesRes, topProductsRes];
-    const sessionExpired = results.some(r => r.status === "rejected" && (r.reason.status === 401 || r.reason.status === 403));
+    const sessionExpired = results.some(r => r.status === "rejected" && (r.reason && r.reason.status === 401));
     if (sessionExpired){ handleSessionExpired(); return; }
 
     /* ---- KPI cards ---- */
@@ -3472,7 +3450,8 @@ function renderCharts(summary){
     const salesCtx = document.getElementById("salesChart");
     const catCtx = document.getElementById("categoryChart");
 
-    const monthly = summary.monthlySales || [];
+    if (!window.Chart || !salesCtx || !catCtx) return;   // chart library not loaded yet / blocked
+    const monthly = (summary && summary.monthlySales) || [];
     const months = monthly.map(m => m.month);
     const salesData = monthly.map(m => Number(m.totalSales) || 0);
 
@@ -3566,6 +3545,8 @@ async function fetchGroupedSales(groupBy){
 function buildBreakdownBarChart(canvasId, existingInstance, rows, onBarClick){
     const ctx = document.getElementById(canvasId);
     if (existingInstance) existingInstance.destroy();
+    if (!window.Chart || !ctx) return null;
+    rows = Array.isArray(rows) ? rows : [];
     return new Chart(ctx, {
         type: "bar",
         data: {
@@ -3675,7 +3656,7 @@ async function loadAndRenderInvoices(){
         fillSelectPreserving("invoicesDistributorFilter", `<option value="">All Distributors</option>`,
             STATE.distributors, d => d.id, d => d.distributorName);
     }catch(err){
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         document.getElementById("invoicesTableBody").innerHTML = `<tr><td colspan="6" class="text-center text-muted py-4">Could not load invoices from the server.</td></tr>`;
         showApiError(err, "Could not load invoices");
         return;
@@ -4419,7 +4400,7 @@ async function loadAndRenderPayments(){
 
     if (payRes.status === "rejected"){
         const err = payRes.reason;
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         document.getElementById("paymentsTableBody").innerHTML = `<tr><td colspan="8" class="text-center text-muted py-4">Could not load payments from the server.</td></tr>`;
         showApiError(err, "Could not load payments");
         return;
@@ -4933,7 +4914,7 @@ async function loadAndRenderSalesReturns(){
         STATE.salesReturns = unwrap(res, []);
         renderSalesReturnsTable();
     }catch(err){
-        if (err.status === 401 || err.status === 403){ handleSessionExpired(); return; }
+        if (err.status === 401){ handleSessionExpired(); return; }
         showApiError(err, "Could not load sales returns");
     }finally{
         hideSpinner();

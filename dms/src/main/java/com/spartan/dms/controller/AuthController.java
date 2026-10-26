@@ -22,6 +22,8 @@ public class AuthController {
     private final AuthService authService;
     private final com.spartan.dms.security.SecurityUtils securityUtils;
     private final com.spartan.dms.service.AuditLogService auditLogService;
+    private final com.spartan.dms.security.JwtUtil jwtUtil;
+    private final com.spartan.dms.security.TokenRevocationService tokenRevocationService;
 
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<String>> register(
@@ -56,14 +58,19 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<ApiResponse<String>> logout() {
+    public ResponseEntity<ApiResponse<String>> logout(jakarta.servlet.http.HttpServletRequest request) {
 
         try {
             var user = securityUtils.getCurrentUser();
             auditLogService.logAs("LOGOUT", "AUTH", user.getId(), user.getUsername(), user.getRole().getRoleName(), "Logout");
-            // BUG-M3: actually invalidate every token issued before now for
-            // this user server-side, in addition to the audit log above.
-            authService.logout(user);
+            // Revoke ONLY the token used for this request. (Previously every
+            // token of the account was invalidated, so one logout on any
+            // device kicked all other admin sessions out with "Session expired".)
+            String header = request.getHeader(com.spartan.dms.constants.SecurityConstants.HEADER);
+            if (header != null && header.startsWith(com.spartan.dms.constants.SecurityConstants.TOKEN_PREFIX)) {
+                String token = header.substring(com.spartan.dms.constants.SecurityConstants.TOKEN_PREFIX.length());
+                tokenRevocationService.revoke(token, jwtUtil.extractExpirationMillis(token));
+            }
         } catch (Exception ignored) {
             // No authenticated context (e.g. token already expired) — logout still succeeds client-side.
         }
