@@ -29,6 +29,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     // the UserDetails CustomUserDetailsService returns is Spring Security's
     // plain built-in User and doesn't carry that field.
     private final UserRepository userRepository;
+    private final TokenRevocationService tokenRevocationService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -49,7 +50,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 SecurityConstants.TOKEN_PREFIX.length());
 
         try {
-            if (jwtUtil.validateToken(token)) {
+            if (jwtUtil.validateToken(token) && !tokenRevocationService.isRevoked(token)) {
 
                 String username = jwtUtil.extractUsername(token);
 
@@ -79,7 +80,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                     if (!userDetails.isEnabled()) {
                         log.debug("JWT authentication rejected: account '{}' is deactivated", username);
-                    } else if (tokensValidSince != null && (issuedAt == null || issuedAt.isBefore(tokensValidSince))) {
+                    } else if (tokensValidSince != null && issuedAt != null
+                            // JWT `iat` only has whole-second precision while
+                            // tokensValidSince keeps milliseconds, so a login in
+                            // the same second as the last logout was wrongly
+                            // treated as "issued before logout" -> instant
+                            // "Session expired". Compare at second precision.
+                            && issuedAt.isBefore(tokensValidSince.withNano(0))) {
                         log.debug("JWT authentication rejected: token for '{}' was issued before the account's last logout", username);
                     } else {
                         UsernamePasswordAuthenticationToken authentication =
