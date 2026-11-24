@@ -24,6 +24,12 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final CorsConfigurationSource corsConfigurationSource;
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
+    private final com.spartan.dms.repository.UserRepository userRepository;
+    private final CustomUserDetailsService customUserDetailsService;
+
+    // Staff portal link key. Empty = link OFF (default) — nothing changes.
+    @org.springframework.beans.factory.annotation.Value("${app.portal.integration-key:}")
+    private String portalIntegrationKey;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -115,6 +121,9 @@ public class SecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter,
+                        UsernamePasswordAuthenticationFilter.class)
+                // Staff portal -> DMS link (X-Portal-Key). OFF unless the key is set.
+                .addFilterBefore(new PortalIntegrationFilter(portalIntegrationKey, userRepository, customUserDetailsService),
                         UsernamePasswordAuthenticationFilter.class)
                 // BUG-M2: a missing/invalid JWT now gets the app's standard
                 // JSON error envelope (401) instead of a bare container 403.
