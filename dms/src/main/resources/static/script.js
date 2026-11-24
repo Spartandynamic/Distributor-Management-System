@@ -2606,6 +2606,13 @@ function distributorOptionsHtml(selected){
  * load and after every successful Create/Update/Delete for that module. */
 async function loadAndRenderCrud(moduleName, page){
     const cfg = CRUD_CONFIG[moduleName];
+    // /distributors is Admin-only on the server. A Distributor / Super
+    // Stockist login reaching this (e.g. from a shared page) used to show a
+    // red "Could not load distributors - no permission" toast. Skip quietly.
+    if (moduleName === "distributors" && !isAdminRoleName((getCurrentUser() || {}).role)) {
+        STATE[cfg.stateKey] = STATE[cfg.stateKey] || [];
+        return;
+    }
     const tbody = document.getElementById(cfg.tableBody);
     try{
         const res = await apiRequest(cfg.endpoint);
